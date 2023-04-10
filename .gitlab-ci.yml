@@ -1,0 +1,101 @@
+stages:
+  - build
+  - deploy
+
+.template_docker_build: &template_docker_build
+  image:
+    name: docker:20.10
+  stage: build
+  services:
+    - name: docker:20.10-dind
+  before_script:
+    - apk add --no-cache gcc python3 py3-pip python3-dev musl-dev libffi-dev openssl-dev cargo make
+    - pip install --upgrade pip
+    - pip install azure-cli
+    - az --version
+    - docker --version
+    - az login --service-principal -u ${AZURE_SP_ID} -p ${AZURE_SP_SECRET} --tenant ${AZURE_TENANT_ID}
+    - az acr login --name ${AZURE_CONTAINER_REGISTRY}
+  script:
+    - echo "DOCKER REGISTRY=${DOCKER_REGISTRY}"
+    - echo "DOCKER TAG=${CI_COMMIT_TAG}"
+    - docker build -t $DOCKER_REGISTRY/$DOCKER_IMAGE:latest -f $CONTEXT_PATH/Dockerfile .
+    - docker tag $DOCKER_REGISTRY/$DOCKER_IMAGE:latest $DOCKER_REGISTRY/$DOCKER_IMAGE:$CI_COMMIT_TAG
+    - docker push $DOCKER_REGISTRY/$DOCKER_IMAGE:latest
+    - docker push $DOCKER_REGISTRY/$DOCKER_IMAGE:$CI_COMMIT_TAG
+    - echo "cleaning..."
+    - docker rmi $DOCKER_REGISTRY/$DOCKER_IMAGE:latest
+    - docker rmi $DOCKER_REGISTRY/$DOCKER_IMAGE:$CI_COMMIT_TAG
+  variables:
+    AZURE_CONTAINER_REGISTRY: 'acrapdevelopment'
+    DOCKER_REGISTRY: 'acrapdevelopment.azurecr.io'
+    DOCKER_IMAGE: 'portalclaimidentity-api'
+    CONTEXT_PATH: 'PortalClaim.Api'
+  cache:
+    paths:
+      - .venv
+      - .cache/pip
+  only:
+    - /^dev-[\d]*.[\d]*.[\d]*$/
+    - development
+  except:
+    - branches
+
+.template_deploy: &template_deploy
+  image:
+    name: bitnami/kubectl:latest
+    entrypoint: ['']
+  stage: deploy
+  before_script:
+    - kubectl config get-contexts
+    - kubectl config use-context ${GITLAB_AGENT_CONTEXT_PATH}:${AGENT_NAME}
+  script:
+    - kubectl set image deployment.apps/${K8S_APP_NAME} ${K8S_APP_NAME}=${DOCKER_REGISTRY}/${DOCKER_IMAGE}:$CI_COMMIT_TAG --namespace ${K8S_NAMESPACE}
+  variables:
+    DOCKER_REGISTRY: 'acrapdevelopment.azurecr.io'
+    DOCKER_IMAGE: 'portalclaim-api'
+    K8S_APP_NAME: 'portalclaim-api'
+    K8S_NAMESPACE: 'production'
+    GITLAB_AGENT_CONTEXT_PATH: 'global-trade-corporation/portal-claim/portalclaiminfra'
+    AGENT_NAME: 'k8s-agent'
+  only:
+    - /^dev-[\d]*.[\d]*.[\d]*$/
+    - development
+  except:
+    - branches
+
+Docker Build Dev Api:
+  <<: *template_docker_build
+
+  environment:
+    name: dev
+
+  variables:
+    AZURE_CONTAINER_REGISTRY: 'acrapdevelopment'
+    DOCKER_REGISTRY: 'acrapdevelopment.azurecr.io'
+    DOCKER_IMAGE: 'portalclaimpgeneral-api'
+    CONTEXT_PATH: '.'
+  only:
+    - /^dev-api-[\d]*.[\d]*.[\d]*$/
+    - development
+  except:
+    - branches
+
+Deploy Dev Api:
+  <<: *template_deploy
+
+  environment:
+    name: dev
+
+  variables:
+    DOCKER_REGISTRY: 'acrapdevelopment.azurecr.io'
+    DOCKER_IMAGE: 'portalclaimpgeneral-api'
+    K8S_APP_NAME: 'portalclaimpgeneral-api'
+    K8S_NAMESPACE: 'production'
+    GITLAB_AGENT_CONTEXT_PATH: 'global-trade-corporation/portal-claim/portalclaiminfra'
+    AGENT_NAME: 'k8s-agent-dev'
+  only:
+    - /^dev-api-[\d]*.[\d]*.[\d]*$/
+    - development
+  except:
+    - branches
